@@ -23,7 +23,7 @@ The server stores StoredKey, ServerKey, salt, and iteration count.*/
 // --- User credential storage ---
 type SCRAMCredential struct {
 	Salt       string `json:"salt"`       // base64 encoded
-	Iterations int    `json:"iterations"` // iteration count
+	Iterations int    `json:"iterations"` // iterations count
 	StoredKey  string `json:"stored_key"` // base64 encoded
 	ServerKey  string `json:"server_key"` // base64 encoded
 }

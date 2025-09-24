@@ -77,7 +77,7 @@ func HandleConnection(client net.Conn) {
 	}
 
 	// Forward to backend
-	key := user + ":" + db // only user and db now
+	key := user + ":" + db
 	backendAddr, err := control_plane.GetBackendAddress(key)
 	if err != nil {
 		fmt.Println("failed to get backend for key:", key, err)
