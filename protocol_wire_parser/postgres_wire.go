@@ -2,14 +2,19 @@ package protocol_wire_parser
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"os"
 	"postgres-cp-proxy/auth"
 	"postgres-cp-proxy/control_plane"
 	"sync"
 )
+
+var certMutex = &sync.Mutex{}
 
 func HandleConnection(client net.Conn) {
 	defer client.Close()
@@ -35,12 +40,36 @@ func HandleConnection(client net.Conn) {
 	switch protoVersion {
 	case 196608: // normal
 	case 80877103: // SSL request
-		fmt.Println("Client requested SSL, replying 'N' (No SSL)")
-		if _, err := client.Write([]byte("N")); err != nil {
-			fmt.Println("Failed to write SSL reject:", err)
+		fmt.Println("Client requested SSL, replying 'S' ")
+		if _, err := client.Write([]byte("S")); err != nil {
+			fmt.Println("Failed to write SSL Accept:", err)
 			return
 		}
-		// Re-read StartupMessage
+
+		wd, err := os.Getwd()
+		if err != nil {
+			fmt.Println("Error getting working directory:", err)
+			return
+		}
+		certMutex.Lock()
+		cert, err := tls.LoadX509KeyPair(wd+"/wildcard.crt", wd+"/wildcard.key")
+		certMutex.Unlock()
+		if err != nil {
+			log.Println("failed to load cert:", err)
+		}
+		tlsConfig := &tls.Config{
+			Certificates:             []tls.Certificate{cert},
+			MinVersion:               tls.VersionTLS12,
+			CurvePreferences:         []tls.CurveID{tls.X25519, tls.CurveP256},
+			PreferServerCipherSuites: true,
+		}
+		tlsConn := tls.Server(client, tlsConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			fmt.Println("TLS handshake failed:", err)
+			return
+		}
+		client = tlsConn
+
 		if err := binary.Read(client, binary.BigEndian, &length); err != nil {
 			fmt.Println("Error re-reading length:", err)
 			return
@@ -68,6 +97,7 @@ func HandleConnection(client net.Conn) {
 		fmt.Println("missing user or database in startup")
 		return
 	}
+	fmt.Println("User:", user, "Database:", db)
 
 	// SCRAM authentication
 	if err := auth.HandleSCRAM(client, user); err != nil {
