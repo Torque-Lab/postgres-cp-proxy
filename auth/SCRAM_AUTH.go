@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -28,6 +29,7 @@ type SCRAMCredential struct {
 	ServerKey  string `json:"server_key"` // base64 encoded
 }
 
+// format username: value,
 var userCredentials = make(map[string]SCRAMCredential)
 var tableMutex = &sync.RWMutex{}
 
@@ -234,7 +236,11 @@ func HandleSCRAM(client net.Conn, username string) error {
 	}
 
 	// Build server-first-message
-	serverNonce := clientNonce + "server_nonce" // random in prod
+	serverRandom, error := generateNonce(18)
+	if error != nil {
+		return error
+	}
+	serverNonce := clientNonce + serverRandom // random in prod
 	serverFirst := fmt.Sprintf("r=%s,s=%s,i=%d", serverNonce, cred.Salt, cred.Iterations)
 	if err := SendSASLContinue(client, serverFirst); err != nil {
 		return err
@@ -264,4 +270,12 @@ func HandleSCRAM(client net.Conn, username string) error {
 	}
 
 	return SendAuthenticationOk(client)
+}
+
+func generateNonce(length int) (string, error) {
+	bytes := make([]byte, length)
+	if _, err := io.ReadFull(rand.Reader, bytes); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(bytes), nil
 }

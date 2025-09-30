@@ -12,9 +12,9 @@ var (
 	// key be like username:dbname->db_url
 	backendAddrTable = make(map[string]string)
 	tableMutex       = &sync.RWMutex{}
-	controlPlaneURL  = "http://localhost:8080/backend"
 )
 var auth_token = os.Getenv("AUTH_TOKEN")
+var controlPlaneURL = os.Getenv("CONTROL_PLANE_URL")
 
 func GetBackendAddress(key string) (string, error) {
 	tableMutex.RLock()
@@ -23,7 +23,7 @@ func GetBackendAddress(key string) (string, error) {
 	if ok {
 		return addr, nil
 	}
-	resp, err := http.Get(controlPlaneURL + "?key=" + key)
+	resp, err := http.Get(controlPlaneURL + "api/postgres" + "?key=" + key)
 	if err != nil {
 		return "", err
 	}
