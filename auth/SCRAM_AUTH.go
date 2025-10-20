@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"postgres-cp-proxy/control_plane"
 	"strings"
-	"sync"
 )
 
 /* do this in control plane
@@ -20,31 +20,6 @@ ClientKey = HMAC(SaltedPassword, "Client Key")
 StoredKey = HASH(ClientKey)
 ServerKey = HMAC(SaltedPassword, "Server Key")
 The server stores StoredKey, ServerKey, salt, and iteration count.*/
-
-// --- User credential storage ---
-type SCRAMCredential struct {
-	Salt       string `json:"salt"`       // base64 encoded
-	Iterations int    `json:"iterations"` // iterations count
-	StoredKey  string `json:"stored_key"` // base64 encoded
-	ServerKey  string `json:"server_key"` // base64 encoded
-}
-
-// format username: value,
-var userCredentials = make(map[string]SCRAMCredential)
-var tableMutex = &sync.RWMutex{}
-
-func AddUserCredential(username string, cred SCRAMCredential) {
-	tableMutex.Lock()
-	defer tableMutex.Unlock()
-	userCredentials[username] = cred
-}
-
-func GetUserCredential(username string) (SCRAMCredential, bool) {
-	tableMutex.RLock()
-	defer tableMutex.RUnlock()
-	cred, exists := userCredentials[username]
-	return cred, exists
-}
 
 // --- Postgres wire helpers ---
 func SendAuthenticationSASL(client net.Conn) error {
@@ -212,10 +187,10 @@ func ComputeServerSignature(serverKey []byte, authMessage string) string {
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
-func HandleSCRAM(client net.Conn, username string) error {
-	cred, ok := GetUserCredential(username)
+func HandleSCRAM(client net.Conn, username_db_name string) error {
+	cred, ok := control_plane.GetUserCredential(username_db_name)
 	if !ok {
-		return fmt.Errorf("user %q not found", username)
+		return fmt.Errorf("user %q not found", username_db_name)
 	}
 
 	if err := SendAuthenticationSASL(client); err != nil {
@@ -231,6 +206,7 @@ func HandleSCRAM(client net.Conn, username string) error {
 	if err != nil {
 		return err
 	}
+	username := strings.Split(username_db_name, ":")[0]
 	if clientUser != username {
 		return fmt.Errorf("username mismatch")
 	}

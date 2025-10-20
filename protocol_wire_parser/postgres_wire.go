@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"postgres-cp-proxy/auth"
 	"postgres-cp-proxy/control_plane"
 	"sync"
@@ -45,14 +44,8 @@ func HandleConnection(client net.Conn) {
 			fmt.Println("Failed to write SSL Accept:", err)
 			return
 		}
-
-		wd, err := os.Getwd()
-		if err != nil {
-			fmt.Println("Error getting working directory:", err)
-			return
-		}
 		certMutex.Lock()
-		cert, err := tls.LoadX509KeyPair(wd+"/wildcard.crt", wd+"/wildcard.key")
+		cert, err := tls.LoadX509KeyPair("/etc/ssl/wildcard.crt", "/etc/ssl/wildcard.key")
 		certMutex.Unlock()
 		if err != nil {
 			log.Println("failed to load cert:", err)
@@ -100,14 +93,14 @@ func HandleConnection(client net.Conn) {
 	fmt.Println("User:", user, "Database:", db)
 
 	// SCRAM authentication
-	if err := auth.HandleSCRAM(client, user); err != nil {
+	key := user + ":" + db
+	if err := auth.HandleSCRAM(client, key); err != nil {
 		fmt.Println("SCRAM authentication failed:", err)
 		auth.SendError(client, err.Error())
 		return
 	}
 
 	// Forward to backend
-	key := user + ":" + db
 	backendAddr, err := control_plane.GetBackendAddress(key)
 	if err != nil {
 		fmt.Println("failed to get backend for key:", key, err)
