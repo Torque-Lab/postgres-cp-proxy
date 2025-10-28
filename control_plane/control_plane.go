@@ -38,7 +38,7 @@ func GetBackendAddress(key string) (string, error) {
 	if ok {
 		return addr.Backend, nil
 	}
-	resp, err := http.Get(controlPlaneURL + "api/v1/postgres/table" + "?key=" + key + "&auth_token=" + auth_token)
+	resp, err := http.Get(controlPlaneURL + "api/v1/infra/postgres/route-table" + "?key=" + key + "&auth_token=" + auth_token)
 	if err != nil {
 		return "", err
 	}
@@ -56,9 +56,11 @@ func GetBackendAddress(key string) (string, error) {
 	return req.Backend, nil
 }
 func StartUpdateServer() {
-	http.HandleFunc("/api/v1/postgres/update-table", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/v1/infra/postgres/update-table", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Update request received")
 		var req struct {
+			Message   string          `json:"message"`
+			Success   bool            `json:"success"`
 			AuthToken string          `json:"auth_token"`
 			OldKey    string          `json:"old_key"`
 			NewKey    string          `json:"new_key"`

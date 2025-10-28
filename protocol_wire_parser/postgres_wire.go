@@ -17,7 +17,8 @@ var certMutex = &sync.Mutex{}
 
 func HandleConnection(client net.Conn) {
 	defer client.Close()
-
+	certPath := "/etc/ssl/certs/tls.crt"
+	keyPath := "/etc/ssl/certs/tls.key"
 	var length uint32
 	if err := binary.Read(client, binary.BigEndian, &length); err != nil {
 		fmt.Println("Error reading startup length:", err)
@@ -45,7 +46,7 @@ func HandleConnection(client net.Conn) {
 			return
 		}
 		certMutex.Lock()
-		cert, err := tls.LoadX509KeyPair("/etc/ssl/wildcard.crt", "/etc/ssl/wildcard.key")
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		certMutex.Unlock()
 		if err != nil {
 			log.Println("failed to load cert:", err)

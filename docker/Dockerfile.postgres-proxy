@@ -1,0 +1,21 @@
+
+FROM golang:1.25 AS builder
+WORKDIR /app
+
+COPY go.mod ./
+RUN go mod download
+COPY /auth ./auth
+COPY /main ./main
+COPY /protocol_wire_parser ./protocol_wire_parser
+COPY /control_plane ./control_plane
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o postgres-proxy ./main/main.go
+
+FROM scratch AS runner
+WORKDIR /app
+COPY --from=builder /etc/ssl /etc/ssl
+COPY --chmod=755 --from=builder /app/postgres-proxy /usr/local/bin/postgres-proxy
+
+EXPOSE 5455
+EXPOSE 9000
+CMD ["postgres-proxy"]
