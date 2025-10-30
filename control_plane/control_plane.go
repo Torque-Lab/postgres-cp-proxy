@@ -9,12 +9,11 @@ import (
 	"sync"
 )
 
-// --- User credential storage ---
 type SCRAMCredential struct {
-	Salt       string // base64 encoded
-	Iterations int    // iterations count
-	StoredKey  string // base64 encoded
-	ServerKey  string // base64 encoded
+	Salt       string `json:"salt"` // base64 encoded
+	Iterations int    `json:"iterations"`
+	StoredKey  string `json:"stored_key"` // base64 encoded
+	ServerKey  string `json:"server_key"` // base64 encoded
 }
 
 var (
@@ -32,14 +31,9 @@ var auth_token = os.Getenv("AUTH_TOKEN")
 var controlPlaneURL = os.Getenv("CONTROL_PLANE_URL")
 
 func GetBackendAddress(key string) (string, error) {
-	tableMutex.RLock()
-	addr, ok := backendAddrTable[key]
-	tableMutex.RUnlock()
-	if ok {
-		return addr.Backend, nil
-	}
 	resp, err := http.Get(controlPlaneURL + "api/v1/infra/postgres/route-table" + "?key=" + key + "&auth_token=" + auth_token)
 	if err != nil {
+		fmt.Println(err, "get error")
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -48,11 +42,13 @@ func GetBackendAddress(key string) (string, error) {
 		UserCred SCRAMCredential `json:"user_cred"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&req); err != nil {
+		fmt.Println(err, "decode error")
 		return "", err
 	}
 	tableMutex.Lock()
 	backendAddrTable[key] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
 	tableMutex.Unlock()
+	fmt.Println("Fetched backend for key:", key, "->", req.Backend)
 	return req.Backend, nil
 }
 func StartUpdateServer() {
@@ -111,7 +107,14 @@ func AddUserCredential(username_db_name string, backend string, cred SCRAMCreden
 
 func GetUserCredential(username_db_name string) (SCRAMCredential, bool) {
 	tableMutex.RLock()
-	defer tableMutex.RUnlock()
 	cred, exists := backendAddrTable[username_db_name]
+	tableMutex.RUnlock()
+	fmt.Println("lock released")
+	if !exists {
+		GetBackendAddress(username_db_name)
+	}
+	tableMutex.RLock()
+	defer tableMutex.RUnlock()
+	cred, exists = backendAddrTable[username_db_name]
 	return cred.UserCred, exists
 }

@@ -95,41 +95,43 @@ func HandleConnection(client net.Conn) {
 
 	// SCRAM authentication
 	key := user + ":" + db
-	if err := auth.HandleSCRAM(client, key); err != nil {
+	if _, err := auth.HandleSCRAM(client, key); err != nil {
 		fmt.Println("SCRAM authentication failed:", err)
 		auth.SendError(client, err.Error())
 		return
 	}
-
-	// Forward to backend
+	/* After HandleSCRAM not give any error ,
+	direct dail to real postgres which reply
+	AuthOk packet directly after see startup message(real postgres not restart auth)
+	 as configured to trust all */
 	backendAddr, err := control_plane.GetBackendAddress(key)
 	if err != nil {
 		fmt.Println("failed to get backend for key:", key, err)
 		return
 	}
 
-	backendConn, err := net.Dial("tcp", backendAddr)
+	postgresConnection, err := net.Dial("tcp", backendAddr)
 	if err != nil {
 		fmt.Println("error dialing backend:", err)
 		return
 	}
-	defer backendConn.Close()
-
-	// Forward startup message to backend
-	if err := binary.Write(backendConn, binary.BigEndian, length); err != nil {
+	defer postgresConnection.Close()
+	// Forward startup message to backend, warmup our real baby postgres
+	if err := binary.Write(postgresConnection, binary.BigEndian, length); err != nil {
 		fmt.Println("error forwarding startup length to backend:", err)
 		return
 	}
-	if _, err := backendConn.Write(payload); err != nil {
+	if _, err := postgresConnection.Write(payload); err != nil {
 		fmt.Println("error forwarding startup payload to backend:", err)
 		return
 	}
-
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go proxyPipe(&wg, client, backendConn)
-	go proxyPipe(&wg, backendConn, client)
+	//just handover connection to real client with real postgres
+	go proxyPipe(client, postgresConnection, &wg) // copy client -> backend
+	go proxyPipe(postgresConnection, client, &wg) // copy backend -> client
 	wg.Wait()
+
 }
 func parseKeyValue(b []byte) map[string]string {
 	m := make(map[string]string)
@@ -144,7 +146,14 @@ func parseKeyValue(b []byte) map[string]string {
 	}
 	return m
 }
-func proxyPipe(wg *sync.WaitGroup, src net.Conn, dst net.Conn) {
+
+func proxyPipe(src, dst net.Conn, wg *sync.WaitGroup) {
 	defer wg.Done()
-	io.Copy(dst, src)
+	_, _ = io.Copy(dst, src)
+	if tcpConn, ok := dst.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+	}
+	if tcpConn, ok := src.(*net.TCPConn); ok {
+		_ = tcpConn.CloseRead()
+	}
 }

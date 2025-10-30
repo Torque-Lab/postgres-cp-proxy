@@ -14,23 +14,43 @@ import (
 	"strings"
 )
 
-/* do this in control plane
+/*
+	do this in control plane
+
 SaltedPassword = PBKDF2(password, salt, iterations)
 ClientKey = HMAC(SaltedPassword, "Client Key")
 StoredKey = HASH(ClientKey)
 ServerKey = HMAC(SaltedPassword, "Server Key")
-The server stores StoredKey, ServerKey, salt, and iteration count.*/
-
-// --- Postgres wire helpers ---
-func SendAuthenticationSASL(client net.Conn) error {
+The server stores StoredKey, ServerKey, salt, and iteration count.
+*/
+func SendAuthenticationSASL(conn net.Conn) error {
 	buf := new(bytes.Buffer)
+
+	// Message type
 	buf.WriteByte('R')
-	mechanism := []byte("SCRAM-SHA-256\x00")
-	length := int32(4 + 4 + len(mechanism))
-	binary.Write(buf, binary.BigEndian, length)
-	binary.Write(buf, binary.BigEndian, int32(10)) // AuthenticationSASL
-	buf.Write(mechanism)
-	_, err := client.Write(buf.Bytes())
+
+	// Mechanism list
+	mech := []byte("SCRAM-SHA-256\x00") // each ends with \0
+	endMarker := []byte{0}              // terminator (signals end of list)
+
+	// Compute total length:
+	// 4 (length field itself) + 4 (auth code) + len(mech) + len(endMarker)
+	totalLen := int32(4 + 4 + len(mech) + len(endMarker))
+	binary.Write(buf, binary.BigEndian, totalLen)
+
+	// Auth code = 10 (AuthenticationSASL)
+	binary.Write(buf, binary.BigEndian, int32(10))
+
+	// Mechanisms + terminator
+	buf.Write(mech)
+	buf.Write(endMarker)
+
+	b := buf.Bytes()
+
+	fmt.Printf("SendAuthenticationSASL bytes: % x\n", b)
+	fmt.Printf("TotalLen=%d, AuthCode=10\n", totalLen)
+
+	_, err := conn.Write(b)
 	return err
 }
 
@@ -58,14 +78,14 @@ func SendSASLFinal(client net.Conn, msg string) error {
 	return err
 }
 
-func SendAuthenticationOk(client net.Conn) error {
-	buf := new(bytes.Buffer)
-	buf.WriteByte('R')
-	binary.Write(buf, binary.BigEndian, int32(8))
-	binary.Write(buf, binary.BigEndian, int32(0))
-	_, err := client.Write(buf.Bytes())
-	return err
-}
+// func SendAuthenticationOk(client net.Conn) error {
+// 	buf := new(bytes.Buffer)
+// 	buf.WriteByte('R')
+// 	binary.Write(buf, binary.BigEndian, int32(8))
+// 	binary.Write(buf, binary.BigEndian, int32(0))
+// 	_, err := client.Write(buf.Bytes())
+// 	return err
+// }
 
 func SendError(client net.Conn, msg string) {
 	buf := new(bytes.Buffer)
@@ -125,37 +145,101 @@ func XORBytes(a, b []byte) []byte {
 	}
 	return out
 }
-
-func ReadClientSASLMessage(client net.Conn) (string, error) {
-	var msgType [1]byte
-	if _, err := client.Read(msgType[:]); err != nil {
-		return "", err
+func ReadClientSASLMessage(conn net.Conn) (mechanism string, initialResp []byte, clientFirst string, err error) {
+	var t [1]byte
+	if _, err = io.ReadFull(conn, t[:]); err != nil {
+		return "", nil, "", err
 	}
-	if msgType[0] != 'p' {
-		return "", fmt.Errorf("expected SASL message, got %q", msgType[0])
+	if t[0] != 'p' {
+		return "", nil, "", fmt.Errorf("expected 'p' (SASLInitialResponse), got %q", t[0])
 	}
 
 	var length uint32
-	if err := binary.Read(client, binary.BigEndian, &length); err != nil {
-		return "", err
-	}
-	payload := make([]byte, length-4)
-	if _, err := io.ReadFull(client, payload); err != nil {
-		return "", err
+	if err = binary.Read(conn, binary.BigEndian, &length); err != nil {
+		return "", nil, "", err
 	}
 
-	return string(payload[:len(payload)-1]), nil // remove trailing NUL
+	payload := make([]byte, length-4)
+	if _, err = io.ReadFull(conn, payload); err != nil {
+		return "", nil, "", err
+	}
+
+	// Try to find null after mechanism
+	nullIdx := bytes.IndexByte(payload, 0)
+
+	if nullIdx == -1 {
+		//  fallback: assume the mechanism name is known and fixed (like SCRAM-SHA-256)
+		// and that the next 4 bytes are the int32 initial response length
+		if len(payload) < len("SCRAM-SHA-256")+4 {
+			return "", nil, "", fmt.Errorf("invalid SASL payload: too short to parse without null terminator")
+		}
+		mechanism = "SCRAM-SHA-256"
+		offset := len(mechanism)
+		initialLen := int(binary.BigEndian.Uint32(payload[offset : offset+4]))
+		rest := payload[offset+4:]
+		if initialLen == -1 {
+			return mechanism, nil, "", nil
+		}
+		if initialLen > len(rest) {
+			initialLen = len(rest)
+		}
+		initialResp = rest[:initialLen]
+		clientFirst = string(initialResp)
+
+		fmt.Printf("[WARN] missing null terminator; assumed mechanism=%q\n", mechanism)
+		fmt.Printf("ReadClientSASLMessage: fallback parse initialLen=%d actual=%d\n", initialLen, len(initialResp))
+		fmt.Printf("initialResp text: %q\n", clientFirst)
+		return mechanism, initialResp, clientFirst, nil
+	}
+
+	// Normal path with null terminator
+	mechanism = string(payload[:nullIdx])
+	if len(payload) < nullIdx+5 {
+		return mechanism, nil, "", fmt.Errorf("invalid SASL payload: missing initial response length")
+	}
+	initialLen := int(binary.BigEndian.Uint32(payload[nullIdx+1 : nullIdx+5]))
+	rest := payload[nullIdx+5:]
+	if initialLen == -1 {
+		return mechanism, nil, "", nil
+	}
+	if initialLen > len(rest) {
+		initialLen = len(rest)
+	}
+	initialResp = rest[:initialLen]
+	clientFirst = string(initialResp)
+
+	fmt.Printf("ReadClientSASLMessage: mech=%q initialLen=%d actual=%d\n", mechanism, initialLen, len(initialResp))
+	fmt.Printf("initialResp text: %q\n", clientFirst)
+	return mechanism, initialResp, clientFirst, nil
 }
 
-// Parse client-first-message: extract username and nonce
-func ParseClientFirstMessage(msg string) (username, nonce string, err error) {
-	// client-first-message format: "n=username,r=clientnonce"
-	parts := strings.Split(msg, ",")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid client first message")
+// parseClientFirst extracts username (n=) from the SCRAM client-first string.
+// It handles GS2 header like "n,," or "y,authzid," followed by "n=<user>,r=<nonce>,..."
+// Change the return signature
+func parseClientFirst(clientFirst string) (username string, nonce string, clientFirstBare string, err error) {
+	// clientFirst expected like: "<gs2-header>,<client-first-bare>"
+	parts := strings.SplitN(clientFirst, ",", 3)
+	if len(parts) < 3 {
+		// fallback: try to find "n=" directly
+		username, nonce, err := parseNfromBare(clientFirst)
+		return username, nonce, clientFirst, err // Assume it was already bare
 	}
-	username = strings.TrimPrefix(parts[0], "n=")
-	nonce = strings.TrimPrefix(parts[1], "r=")
+
+	clientFirstBare = parts[2] // This is the part we need
+	username, nonce, err = parseNfromBare(clientFirstBare)
+	return username, nonce, clientFirstBare, err
+}
+func parseNfromBare(bare string) (username string, nonce string, err error) {
+	// Bare is like "n=alice,r=abc..."
+	fields := strings.Split(bare, ",")
+	for _, f := range fields {
+		if strings.HasPrefix(f, "n=") {
+			username = strings.TrimPrefix(f, "n=")
+		}
+		if strings.HasPrefix(f, "r=") {
+			nonce = strings.TrimPrefix(f, "r=")
+		}
+	}
 	return username, nonce, nil
 }
 
@@ -171,14 +255,19 @@ func ParseClientFinalMessage(msg string) (proof string, err error) {
 	return "", fmt.Errorf("proof not found in client final message")
 }
 
-// Verify client proof using StoredKey (control plane)
 func VerifyClientProof(clientProofB64 string, storedKey []byte, authMessage string) bool {
 	clientProof, err := base64.StdEncoding.DecodeString(clientProofB64)
+	fmt.Printf("clientProofB64:from previous step %s\n", clientProofB64)
+	fmt.Printf("clientProof (decoded): %x\n", clientProof)
+	fmt.Printf("storedKey: %x\n", storedKey)
+	fmt.Printf("authMessage: %s\n", authMessage)
 	if err != nil {
 		return false
 	}
 	clientKey := XORBytes(clientProof, ComputeHMAC(storedKey, []byte(authMessage)))
+	fmt.Printf("clientKey: %x\n", clientKey)
 	storedKeyCheck := ComputeHash(clientKey)
+	fmt.Printf("storedKeyCheck: %x\n", storedKeyCheck)
 	return hmac.Equal(storedKeyCheck, storedKey)
 }
 
@@ -187,65 +276,73 @@ func ComputeServerSignature(serverKey []byte, authMessage string) string {
 	return base64.StdEncoding.EncodeToString(sig)
 }
 
-func HandleSCRAM(client net.Conn, username_db_name string) error {
+func HandleSCRAM(client net.Conn, username_db_name string) (string, error) {
 	cred, ok := control_plane.GetUserCredential(username_db_name)
 	if !ok {
-		return fmt.Errorf("user %q not found", username_db_name)
+		return "", fmt.Errorf("user %q not found", username_db_name)
 	}
 
 	if err := SendAuthenticationSASL(client); err != nil {
-		return err
+		return "", err
 	}
 
-	clientFirst, err := ReadClientSASLMessage(client)
+	_, _, clientFirst, err := ReadClientSASLMessage(client)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	clientUser, clientNonce, err := ParseClientFirstMessage(clientFirst)
+	clientUser, clientNonce, clientFirstBare, err := parseClientFirst(clientFirst)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	username := strings.Split(username_db_name, ":")[0]
-	if clientUser != username {
-		return fmt.Errorf("username mismatch")
+
+	//  If client didn't send username, fix it.
+	if clientUser == "" {
+		fmt.Println(" clientFirst missing username, populating from startup:", username)
+		// clientFirst = strings.Replace(clientFirst, "n=,", "n="+username+",", 1)
+		clientUser = username
 	}
 
 	// Build server-first-message
 	serverRandom, error := generateNonce(18)
 	if error != nil {
-		return error
+		return "", error
 	}
-	serverNonce := clientNonce + serverRandom // random in prod
+	serverNonce := clientNonce + serverRandom
 	serverFirst := fmt.Sprintf("r=%s,s=%s,i=%d", serverNonce, cred.Salt, cred.Iterations)
 	if err := SendSASLContinue(client, serverFirst); err != nil {
-		return err
+		fmt.Println("SendSASLContinue error:", err)
+		return "", err
 	}
 
-	clientFinal, err := ReadClientSASLMessage(client)
+	clientFinal, err := ReadClientSASLResponse(client)
 	if err != nil {
-		return err
+		return "", err
 	}
 	clientProof, err := ParseClientFinalMessage(clientFinal)
 	if err != nil {
-		return err
+		return "", err
 	}
+	clientFinalBare := strings.Split(clientFinal, ",p=")[0]
 
-	authMessage := clientFirst + "," + serverFirst + "," + clientFinal
+	authMessage := clientFirstBare + "," + serverFirst + "," + clientFinalBare
 
 	storedKeyBytes, _ := base64.StdEncoding.DecodeString(cred.StoredKey)
 	serverKeyBytes, _ := base64.StdEncoding.DecodeString(cred.ServerKey)
-
 	if !VerifyClientProof(clientProof, storedKeyBytes, authMessage) {
-		return fmt.Errorf("client proof verification failed")
+		fmt.Println("VerifyClientProof error:", err)
+		return "", fmt.Errorf("client proof verification failed")
 	}
 
 	serverSignature := ComputeServerSignature(serverKeyBytes, authMessage)
 	if err := SendSASLFinal(client, "v="+serverSignature); err != nil {
-		return err
+		fmt.Println("SendSASLFinal error:", err)
+		return "", err
 	}
-
-	return SendAuthenticationOk(client)
+	fmt.Println("SCRAM authentication successful")
+	return "auth_scram_success", nil
 }
 
 func generateNonce(length int) (string, error) {
@@ -254,4 +351,31 @@ func generateNonce(length int) (string, error) {
 		return "", err
 	}
 	return base64.RawStdEncoding.EncodeToString(bytes), nil
+}
+
+func ReadClientSASLResponse(conn net.Conn) (string, error) {
+	var t [1]byte
+	if _, err := io.ReadFull(conn, t[:]); err != nil {
+		return "", err
+	}
+	if t[0] != 'p' {
+		return "", fmt.Errorf("expected 'p' (SASLResponse), got %q", t[0])
+	}
+
+	var length uint32
+	if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
+		return "", err
+	}
+
+	if length < 4 {
+		return "", fmt.Errorf("invalid SASLResponse length: %d", length)
+	}
+
+	payload := make([]byte, length-4)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return "", err
+	}
+
+	fmt.Printf("ReadClientSASLResponse: data=%q\n", string(payload))
+	return string(payload), nil
 }
