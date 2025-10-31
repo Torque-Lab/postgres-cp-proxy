@@ -3,7 +3,9 @@ FROM golang:1.25 AS builder
 WORKDIR /app
 
 COPY go.mod ./
+COPY go.sum ./
 RUN go mod download
+COPY /env_config ./env_config
 COPY /auth ./auth
 COPY /protocol_wire_parser ./protocol_wire_parser
 COPY /main ./main
@@ -11,10 +13,10 @@ COPY /control_plane ./control_plane
 COPY /entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
-RUN openssl req -x509 -newkey rsa:4096 -sha256 -days 365 \ 
-  -nodes -keyout /etc/ssl/certs/tls.key \
-  -out /etc/ssl/certs/tls.crt \
-  -subj "/C=US/ST=Test/L=Test/O=TestOrg/OU=IT/CN=localhost"
+# RUN openssl req -x509 -newkey rsa:4096 -sha256 -days 365 \ 
+#   -nodes -keyout /etc/ssl/certs/tls.key \
+#   -out /etc/ssl/certs/tls.crt \
+#   -subj "/C=US/ST=Test/L=Test/O=TestOrg/OU=IT/CN=localhost"
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o postgres-proxy ./main/main.go
 

@@ -33,4 +33,4 @@ temp
 .env
 *.cert
 *.key
-
+.env.example
