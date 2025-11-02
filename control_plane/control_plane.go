@@ -1,10 +1,12 @@
 package control_plane
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	redisservice "postgres-cp-proxy/redis_service"
 	"sync"
 )
 
@@ -28,19 +30,36 @@ type nodeInstance struct {
 
 var auth_token = os.Getenv("AUTH_TOKEN")
 var controlPlaneURL = os.Getenv("CONTROL_PLANE_URL")
-var proxy_plane_port = os.Getenv("PROXY_PLANE_PORT")
 
 func GetBackendAddress(key string) (string, error) {
+	var req struct {
+		Backend  string          `json:"backend_url"`
+		UserCred SCRAMCredential `json:"user_cred"`
+	}
+	ctx := context.Background()
+	redisService := redisservice.GetInstance()
+
+	client := redisService.GetClient(ctx)
+	response, err := client.Get(ctx, key).Result()
+	if err == nil {
+		err = json.Unmarshal([]byte(response), &req)
+		if err != nil {
+			fmt.Println(err, "decode error")
+			return "", err
+		}
+		tableMutex.Lock()
+		backendAddrTable[key] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
+		tableMutex.Unlock()
+		fmt.Println("Fetched backend for key:", key, "->", req.Backend)
+		return req.Backend, nil
+	}
 	resp, err := http.Get(controlPlaneURL + "api/v1/infra/postgres/route-table" + "?key=" + key + "&auth_token=" + auth_token)
 	if err != nil {
 		fmt.Println(err, "get error")
 		return "", err
 	}
 	defer resp.Body.Close()
-	var req struct {
-		Backend  string          `json:"backend_url"`
-		UserCred SCRAMCredential `json:"user_cred"`
-	}
+
 	if err := json.NewDecoder(resp.Body).Decode(&req); err != nil {
 		fmt.Println(err, "decode error")
 		return "", err
@@ -51,52 +70,49 @@ func GetBackendAddress(key string) (string, error) {
 	fmt.Println("Fetched backend for key:", key, "->", req.Backend)
 	return req.Backend, nil
 }
-func StartUpdateServer() {
-	http.HandleFunc("/api/v1/infra/postgres/update-table", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Update request received")
-		var req struct {
-			Message   string          `json:"message"`
-			Success   bool            `json:"success"`
-			AuthToken string          `json:"auth_token"`
-			OldKey    string          `json:"old_key"`
-			NewKey    string          `json:"new_key"`
-			Backend   string          `json:"backend_url"`
-			UserCred  SCRAMCredential `json:"user_cred"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if req.AuthToken != auth_token {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+func StartSubscriber() {
+	var req struct {
+		Message   string          `json:"message"`
+		Success   bool            `json:"success"`
+		AuthToken string          `json:"auth_token"`
+		OldKey    string          `json:"old_key"`
+		NewKey    string          `json:"new_key"`
+		Backend   string          `json:"backend_url"`
+		UserCred  SCRAMCredential `json:"user_cred"`
+	}
 
-		tableMutex.Lock()
-		defer tableMutex.Unlock()
+	ctx := context.Background()
+	redisService := redisservice.GetInstance()
+	client := redisService.GetClient(ctx)
 
-		if req.OldKey != "" {
-			if _, exists := backendAddrTable[req.OldKey]; exists {
-				delete(backendAddrTable, req.OldKey)
-				fmt.Println("Deleted old key:", req.OldKey)
+	Subscriber := client.Subscribe(ctx, "update-table")
+	go func() {
+		for {
+			msg, err := Subscriber.ReceiveMessage(ctx)
+			if err != nil {
+				fmt.Println("Error receiving message:", err)
+				return
+			}
+			err = json.Unmarshal([]byte(msg.Payload), &req)
+			if err != nil {
+				fmt.Println("Error unmarshalling message:", err)
+				return
+			}
+			if req.OldKey != "" {
+				if _, exists := backendAddrTable[req.OldKey]; exists {
+					delete(backendAddrTable, req.OldKey)
+					fmt.Println("Deleted old key:", req.OldKey)
+				}
+			}
+			if req.Success {
+				tableMutex.Lock()
+				backendAddrTable[req.NewKey] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
+				tableMutex.Unlock()
+				fmt.Println("Updated mapping:", req.NewKey, "->", req.Backend)
 			}
 		}
-		backendAddrTable[req.NewKey] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
-		fmt.Println("Updated mapping:", req.NewKey, "->", req.Backend)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
-	go func() {
-		fmt.Printf("Update server listening on: %s\n", proxy_plane_port)
-		if err := http.ListenAndServe(":"+proxy_plane_port, nil); err != nil {
-			fmt.Println("Update server error:", err)
-		}
 	}()
+
 }
 
 func AddUserCredential(username_db_name string, backend string, cred SCRAMCredential) {

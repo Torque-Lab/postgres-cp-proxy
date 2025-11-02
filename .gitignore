@@ -2,3 +2,4 @@ wildcard.crt
 wildcard.key
 .env
 proxy
+redis_service

@@ -12,7 +12,7 @@ import (
 var proxy_port = os.Getenv("PROXY_PORT")
 
 func main() {
-	go control_plane.StartUpdateServer()
+	go control_plane.StartSubscriber()
 	listener, err := net.Listen("tcp", ":"+proxy_port)
 	if err != nil {
 		fmt.Println("Error listening:", err.Error())
