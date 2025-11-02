@@ -41,18 +41,16 @@ func GetBackendAddress(key string) (string, error) {
 
 	client := redisService.GetClient(ctx)
 	response, err := client.Get(ctx, key).Result()
-	if err == nil {
-		err = json.Unmarshal([]byte(response), &req)
-		if err != nil {
-			fmt.Println(err, "decode error")
-			return "", err
+	if err == nil && response != "" {
+		if err = json.Unmarshal([]byte(response), &req); err == nil {
+			tableMutex.Lock()
+			backendAddrTable[key] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
+			tableMutex.Unlock()
+			fmt.Println("Fetched backend for key:", key, "->", req.Backend)
+			return req.Backend, nil
 		}
-		tableMutex.Lock()
-		backendAddrTable[key] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
-		tableMutex.Unlock()
-		fmt.Println("Fetched backend for key:", key, "->", req.Backend)
-		return req.Backend, nil
 	}
+
 	resp, err := http.Get(controlPlaneURL + "api/v1/infra/postgres/route-table" + "?key=" + key + "&auth_token=" + auth_token)
 	if err != nil {
 		fmt.Println(err, "get error")
@@ -72,13 +70,10 @@ func GetBackendAddress(key string) (string, error) {
 }
 func StartSubscriber() {
 	var req struct {
-		Message   string          `json:"message"`
-		Success   bool            `json:"success"`
-		AuthToken string          `json:"auth_token"`
-		OldKey    string          `json:"old_key"`
-		NewKey    string          `json:"new_key"`
-		Backend   string          `json:"backend_url"`
-		UserCred  SCRAMCredential `json:"user_cred"`
+		OldKey   string          `json:"old_key"`
+		NewKey   string          `json:"new_key"`
+		Backend  string          `json:"backend_url"`
+		UserCred SCRAMCredential `json:"user_cred"`
 	}
 
 	ctx := context.Background()
@@ -104,7 +99,7 @@ func StartSubscriber() {
 					fmt.Println("Deleted old key:", req.OldKey)
 				}
 			}
-			if req.Success {
+			if req.NewKey != "" {
 				tableMutex.Lock()
 				backendAddrTable[req.NewKey] = nodeInstance{Backend: req.Backend, UserCred: req.UserCred}
 				tableMutex.Unlock()

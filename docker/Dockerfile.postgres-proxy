@@ -10,6 +10,7 @@ COPY /auth ./auth
 COPY /protocol_wire_parser ./protocol_wire_parser
 COPY /main ./main
 COPY /control_plane ./control_plane
+COPY /redis_service ./redis_service
 COPY /entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
@@ -19,10 +20,9 @@ RUN chmod +x ./entrypoint.sh
 #   -subj "/C=US/ST=Test/L=Test/O=TestOrg/OU=IT/CN=localhost"
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o postgres-proxy ./main/main.go
-
 FROM busybox:1.36 AS runner
 WORKDIR /app
-
+RUN ulimit -n 65535
 RUN addgroup -g 1000 myuser && adduser -D -u 1000 -G myuser myuser
 COPY --from=builder /etc/ssl /etc/ssl
 RUN chown -R myuser:myuser /etc/ssl
