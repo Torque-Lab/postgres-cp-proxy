@@ -6,7 +6,7 @@ on:
     paths:
       - .github/workflows/pg-gatway.yaml
       - 'docker/Dockerfile.postgres-proxy'
-      - 'apps/postgres-proxy/**'
+      - 'apps/postgres-cp-proxy/**'
     branches:
       - main
 jobs:
