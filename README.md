@@ -15,7 +15,7 @@ A high-performance TCP gateway for PostgreSQL Wire Protocol that handles SSL ter
 
 ## Architecture
 
-```mermaid
+
 sequenceDiagram
     participant C as Client
     participant P as Proxy
