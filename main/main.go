@@ -9,7 +9,7 @@ import (
 	"postgres-cp-proxy/protocol_wire_parser"
 )
 
-var proxy_port = os.Getenv("PROXY_PORT")
+var proxy_port = os.Getenv("PROXY_PORT_PG")
 
 func main() {
 	go control_plane.StartSubscriber()
