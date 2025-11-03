@@ -3,12 +3,12 @@ name: Build and Deploy Postgres Gateway
 
 on:
   push:
-    paths:
-      - .github/workflows/pg-gatway.yaml
-      - 'docker/Dockerfile.postgres-proxy'
-      - './**'
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'                 
+      - '.github/workflows/**'     
+      - '**/*.yml'      
 jobs:
   build:
     runs-on: ubuntu-latest

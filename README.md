@@ -43,26 +43,26 @@ sequenceDiagram
     P-->>C: AuthenticationSASLFinal (final proxy response)
 
 
-## Start of extra information
- Proxy →> Client:
+%% Start of extra information
+Proxy ->> Client:
   R 10  SCRAM-SHA-256
 
-Client →> Proxy:
+Client ->> Proxy:
   p "SCRAM-SHA-256", client-first-message: n,,n=alice,r=fyko+d2lbbFgONRv9qkxdawL
 
-Proxy →> Client:
+Proxy ->> Client:
   R 11  server-first-message: r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,s=QSXCR+Q6sek8bf92,i=4096
 
-Client →> Proxy:
+Client ->> Proxy:
   p client-final-message: c=biws,r=fyko+d2lbbFgONRv9qkxdawL3rfcNHYJY1ZVvWVs7j,p=base64(clientproof)
 
-Proxy →> Client:
+Proxy ->> Client:
   R 12  server-final-message: v=base64(serversignature)
 
-Proxy →> Client:
-  R 0   Here Auth will be checked and if valid ,open connection to backend which directly reply to real client AuthenticationOK and take over the connection
+Proxy ->> Client:
+  R 0   Here Auth will be checked and if valid, open connection to backend which directly replies to real client AuthenticationOK and takes over the connection
+%% end of extra information
 
-## end of extra information
 
 
     %% Phase 4: Backend Connection (if auth valid in previous phase open connection to backend which directly reply to real client AuthenticationOK and take over the connection)
